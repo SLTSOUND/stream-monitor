@@ -622,7 +622,7 @@
 	
 		iframe = document.createElement("iframe");
 		var iframeContainer = document.getElementById("iframeContainer");
-		iframe.allow = "cross-origin-isolated;autoplay;camera;microphone;fullscreen;picture-in-picture;display-capture;";
+		
 		
 		if (!roomname){
 			roomname = generateString(10);
@@ -641,8 +641,13 @@
 			hash = "&hash="+hash;
 		}
 		
-		
-		var iframesrc = "https://vdo.versus.cam/alpha/?salt=vdo.ninja&speakermuted&sendframes&scene&room="+roomname+additional+"&manual&bitrate=300&viewheight=180&viewwidth=320&cleanoutput&label=Stream_Monitor";
+		if (urlParams.has("vdo")){ // different origin
+			var iframesrc = "https://vdo.ninja/alpha/?debug&salt=vdo.ninja&speakermuted&sendframes&scene&room="+roomname+additional+"&manual&bitrate=300&viewheight=180&viewwidth=320&cleanoutput&label=Stream_Monitor";
+			iframe.allow = "autoplay;camera;microphone;fullscreen;picture-in-picture;display-capture;";
+		} else { // compatible same origin (header policy set)
+			var iframesrc = "https://vdo.versus.cam/alpha/?salt=vdo.ninja&speakermuted&sendframes&scene&room="+roomname+additional+"&manual&bitrate=300&viewheight=180&viewwidth=320&cleanoutput&label=Stream_Monitor";
+			iframe.allow = "cross-origin-isolated;autoplay;camera;microphone;fullscreen;picture-in-picture;display-capture;";
+		}
 		// note: it's possible to set the width/height dyanmically via the IFRAME API also now. just call on video track load.
 		
 		getById("inviteLink").value = "https://vdo.ninja/?room="+roomname+hash+"&remote&label&quality&maxbandwidth&view&proaudio";
@@ -680,18 +685,44 @@
 		/// If you have a routing system setup, you could have just one global listener for all iframes instead.
 		
 		eventer(messageEvent, function (e) {
-			if (e.source != iframe.contentWindow){return} // reject messages send from other iframes
-			//console.log(e.data);
-			if (e.data.frame){  // add `&sendframes` to the view link to trigger this event; it lets you capture video/audio from the parent window
-				if (!media.tracks[e.data.trackID]){
+			if (e.source != iframe.contentWindow) return;
+			
+			if (e.data.frame){ 
+			
+				if (!media.tracks[e.data.trackID]) {
 					media.tracks[e.data.trackID] = {};
-					media.tracks[e.data.trackID].generator = new MediaStreamTrackGenerator({kind:e.data.kind});
-					media.tracks[e.data.trackID].stream = new MediaStream([media.tracks[e.data.trackID].generator]);
-					media.tracks[e.data.trackID].frameWriter = media.tracks[e.data.trackID].generator.writable.getWriter();
 					
-					media.tracks[e.data.trackID].frameWriter.write(e.data.frame);
+					try {
+						if (typeof e.data.frame !== "string"){
+							media.tracks[e.data.trackID].generator = new MediaStreamTrackGenerator({kind: e.data.kind});
+							media.tracks[e.data.trackID].stream = new MediaStream([media.tracks[e.data.trackID].generator]);
+							media.tracks[e.data.trackID].frameWriter = media.tracks[e.data.trackID].generator.writable.getWriter();
+						} else {
+							media.tracks[e.data.trackID].canvas = document.createElement('canvas');
+							media.tracks[e.data.trackID].ctx = media.tracks[e.data.trackID].canvas.getContext('2d', { willReadFrequently: true });
+							media.tracks[e.data.trackID].stream = media.tracks[e.data.trackID].canvas.captureStream(30);
+						}
+					} catch(err) {
+						console.error(err);
+						media.tracks[e.data.trackID].canvas = document.createElement('canvas');
+						media.tracks[e.data.trackID].ctx = media.tracks[e.data.trackID].canvas.getContext('2d', { willReadFrequently: true });
+						media.tracks[e.data.trackID].stream = media.tracks[e.data.trackID].canvas.captureStream(30);
+					}
 					
-					if (!media.streams[e.data.streamID]){
+					if (media.tracks[e.data.trackID].frameWriter) {
+						media.tracks[e.data.trackID].frameWriter.write(e.data.frame);
+					} else if (media.tracks[e.data.trackID].canvas) {
+						const img = new Image();
+						img.onload = () => {
+							media.tracks[e.data.trackID].canvas.width = img.width;
+							media.tracks[e.data.trackID].canvas.height = img.height;
+							media.tracks[e.data.trackID].ctx.drawImage(img, 0, 0);
+							img.remove();
+						};
+						img.src = e.data.frame;
+					}
+
+					if (!media.streams[e.data.streamID]) {
 						media.streams[e.data.streamID] = document.createElement("video");
 						media.streams[e.data.streamID].id = "video_"+e.data.streamID;
 						media.streams[e.data.streamID].muted = true;
@@ -699,25 +730,34 @@
 						media.streams[e.data.streamID].controls = true;
 						media.streams[e.data.streamID].srcObject = media.tracks[e.data.trackID].stream;
 						iframeContainer.appendChild(media.streams[e.data.streamID]);
-					
 					} else {
-						if (e.data.kind=="video"){
-							media.streams[e.data.streamID].srcObject.getVideoTracks().forEach(trk=>{
+						if (e.data.kind == "video") {
+							media.streams[e.data.streamID].srcObject.getVideoTracks().forEach(trk => {
 								media.streams[e.data.streamID].srcObject.removeTrack(trk);
 							});
-						} else if (e.data.kind=="audio"){
-							media.streams[e.data.streamID].srcObject.getAudioTracks().forEach(trk=>{
+						} else if (e.data.kind == "audio") {
+							media.streams[e.data.streamID].srcObject.getAudioTracks().forEach(trk => {
 								media.streams[e.data.streamID].srcObject.removeTrack(trk);
 							});
-						} 
-						media.tracks[e.data.trackID].stream.getTracks().forEach(trk=>{
+						}
+						media.tracks[e.data.trackID].stream.getTracks().forEach(trk => {
 							media.streams[e.data.streamID].srcObject.addTrack(trk);
 						});
 					}
 				} else {
-					media.tracks[e.data.trackID].frameWriter.write(e.data.frame);
+					if (media.tracks[e.data.trackID].frameWriter) {
+						media.tracks[e.data.trackID].frameWriter.write(e.data.frame);
+					} else if (media.tracks[e.data.trackID].canvas) {
+						const img = new Image();
+						img.onload = () => {
+							media.tracks[e.data.trackID].canvas.width = img.width;
+							media.tracks[e.data.trackID].canvas.height = img.height;
+							media.tracks[e.data.trackID].ctx.drawImage(img, 0, 0);
+							img.remove();
+						};
+						img.src = e.data.frame;
+					}
 				}
-				return;
 			} // end of video/audio capture
 			
 			if (e.data.action){
